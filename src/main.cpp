@@ -1,105 +1,191 @@
 #include <Arduino.h>
-
-static constexpr uint8_t const RADIOPIN = 2;
-
 #include <string.h>
 #include <util/crc16.h>
 
+static constexpr uint8_t const RADIOPIN = 2;
+
 static char datastring[80];
 
-static uint16_t gps_CRC16_checksum(char* string);
-static void rtty_txstring(char* string);
-static void rtty_txbyte(char c);
-static void rtty_txbit(int bit);
+static uint16_t gps_CRC16_checksum(char const* string);
 
-void setup()
+enum State
 {
-  pinMode(RADIOPIN, OUTPUT);
-}
+  INVALID = 0,
+  SETTING,
+  SENDING,
+  WAITING,
+};
 
-void loop()
+template <class T>
+class CommLayer
 {
-
-  snprintf(datastring, sizeof(datastring), "RTTY TEST BEACON RTTY TEST BEACON");
-  unsigned int CHECKSUM = gps_CRC16_checksum(datastring);
-  char checksum_str[6];
-  snprintf(checksum_str, sizeof(checksum_str), "*%04X\n", CHECKSUM);
-  strncat(datastring, checksum_str, sizeof(datastring) - 1);
-  datastring[sizeof(datastring) - 1] = '\0';
-
-  rtty_txstring(datastring);
-  delay(2000);
-}
-
-static void rtty_txstring(char* string)
-{
-  char c;
-
-  c = *string++;
-
-  while (c != '\0')
+  public:
+  CommLayer() : value(), state(SETTING)
   {
-    rtty_txbyte(c);
-    c = *string++;
   }
-}
-
-static void rtty_txbyte(char c)
-{
-  /* Simple function to sent each bit of a char to
-   ** rtty_txbit function.
-   ** NB The bits are sent Least Significant Bit first
-   **
-   ** All chars should be preceded with a 0 and
-   ** proceded with a 1. 0 = Start bit; 1 = Stop bit
-   **
-   */
-
-  int i;
-
-  rtty_txbit(0); // Start bit
-
-  // Send bits for for char LSB first
-
-  for (i = 0; i < 7; i++) // Change this here 7 or 8 for ASCII-7 / ASCII-8
+  virtual ~CommLayer()
   {
-    if (c & 1)
-      rtty_txbit(1);
-
-    else
-      rtty_txbit(0);
-
-    c = c >> 1;
+  }
+  virtual void onSet()
+  {
+  }
+  virtual void set(T value)
+  {
+    if (state != SETTING)
+    {
+      return;
+    }
+    this->value = value;
+    onSet();
+    state = SENDING;
   }
 
-  rtty_txbit(1); // Stop bit
-  rtty_txbit(1); // Stop bit
-}
-
-static void rtty_txbit(int bit)
+  protected:
+  T value;
+  State state;
+};
+class TxBit : public CommLayer<bool>
 {
-  if (bit)
+  public:
+  static constexpr bool const BIT_START = 0;
+  static constexpr bool const BIT_STOP = 1;
+  static constexpr unsigned long PERIOD_50_BAUD = 20150; // 50 baud
+
+  TxBit(unsigned long period) : period(period), timestamp(0)
   {
-    // high
-    digitalWrite(RADIOPIN, HIGH);
-  }
-  else
-  {
-    // low
-    digitalWrite(RADIOPIN, LOW);
   }
 
-  // delayMicroseconds(3370); // 300 baud
+  bool send()
+  {
+    switch (state)
+    {
+    case SENDING:
+      digitalWrite(RADIOPIN, value ? HIGH : LOW);
+      state = WAITING;
+      timestamp = micros();
+      break;
+    case WAITING:
+      if (micros() - timestamp >= period - 50)
+      {
+        state = SETTING;
+        return true;
+      }
+      break;
+    default:
+      return false;
+    }
+    return false;
+  }
 
-  // 50 Baud
-  // You can't do 20150 it just doesn't work as the
-  // largest value that will produce an accurate delay is 16383
-  // See : http://arduino.cc/en/Reference/DelayMicroseconds
-  delayMicroseconds(10000);
-  delayMicroseconds(10150);
-}
+  private:
+  unsigned long const period;
+  unsigned long timestamp;
+};
 
-static uint16_t gps_CRC16_checksum(char* string)
+class TxByte : public CommLayer<char>
+{
+  public:
+  static constexpr size_t ASCII_7_LEN = 7;
+  static constexpr size_t ASCII_8_LEN = 8;
+
+  TxByte() : bitType(START), dataOffset(0), txBit(TxBit::PERIOD_50_BAUD)
+  {
+  }
+
+  void onSet()
+  {
+    txBit.set(TxBit::BIT_START);
+    bitType = START;
+  }
+
+  bool send()
+  {
+    if (!txBit.send())
+    {
+      return false;
+    }
+
+    // check for previous bit type
+    switch (bitType)
+    {
+    case START:
+      txBit.set(value & 1);
+      bitType = DATA;
+      dataOffset = 0;
+      break;
+    case DATA:
+      dataOffset++;
+      if (dataOffset < ASCII_7_LEN)
+      {
+        txBit.set((value >> dataOffset) & 1);
+      }
+      else
+      {
+        txBit.set(TxBit::BIT_STOP);
+        bitType = STOP1;
+      }
+      break;
+    case STOP1:
+      txBit.set(TxBit::BIT_STOP);
+      bitType = STOP2;
+      break;
+    case STOP2:
+      state = SETTING;
+      return true;
+    default:
+      break;
+    }
+    return false;
+  }
+
+  private:
+  enum BitType
+  {
+    INVALID,
+    START,
+    DATA,
+    STOP1,
+    STOP2,
+  } bitType;
+  size_t dataOffset;
+  TxBit txBit;
+};
+
+class TxString : public CommLayer<char const*>
+{
+  public:
+  TxString()
+  {
+  }
+
+  void onSet()
+  {
+    curPos = value;
+    txByte.set(*curPos);
+  }
+
+  bool send()
+  {
+    if (!txByte.send())
+    {
+      return false;
+    }
+    curPos++;
+    if (*curPos == '\0')
+    {
+      state = SETTING;
+      return true;
+    }
+    txByte.set(*curPos);
+    return false;
+  }
+
+  private:
+  TxByte txByte;
+  char const* curPos;
+};
+
+static uint16_t gps_CRC16_checksum(char const* string)
 {
   size_t i;
   uint16_t crc;
@@ -115,4 +201,35 @@ static uint16_t gps_CRC16_checksum(char* string)
   }
 
   return crc;
+}
+
+static TxString txString;
+
+void setup()
+{
+  pinMode(RADIOPIN, OUTPUT);
+  snprintf(datastring, sizeof(datastring), "RTTY TEST BEACON RTTY TEST BEACON");
+  unsigned int CHECKSUM = gps_CRC16_checksum(datastring);
+  char checksum_str[6];
+  snprintf(checksum_str, sizeof(checksum_str), "*%04X\n", CHECKSUM);
+  strncat(datastring, checksum_str, sizeof(datastring) - 1);
+  datastring[sizeof(datastring) - 1] = '\0';
+  txString.set(&datastring[0]);
+}
+
+void loop()
+{
+  static auto timestamp = millis();
+  static bool activate = false;
+  if (txString.send())
+  {
+    timestamp = millis();
+    activate = true;
+  }
+  auto curTime = millis();
+  if (activate && curTime - timestamp > 2000)
+  {
+    txString.set(&datastring[0]);
+    activate = false;
+  }
 }
