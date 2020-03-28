@@ -20,12 +20,12 @@ void setup()
 void loop()
 {
 
-  sprintf(datastring, "RTTY TEST BEACON RTTY TEST BEACON"); // Puts the text in the datastring
-  unsigned int CHECKSUM =
-      gps_CRC16_checksum(datastring); // Calculates the checksum for this datastring
+  snprintf(datastring, sizeof(datastring), "RTTY TEST BEACON RTTY TEST BEACON");
+  unsigned int CHECKSUM = gps_CRC16_checksum(datastring);
   char checksum_str[6];
-  sprintf(checksum_str, "*%04X\n", CHECKSUM);
-  strcat(datastring, checksum_str);
+  snprintf(checksum_str, sizeof(checksum_str), "*%04X\n", CHECKSUM);
+  strncat(datastring, checksum_str, sizeof(datastring) - 1);
+  datastring[sizeof(datastring) - 1] = '\0';
 
   rtty_txstring(datastring);
   delay(2000);
@@ -33,12 +33,6 @@ void loop()
 
 static void rtty_txstring(char* string)
 {
-
-  /* Simple function to sent a char at a time to
-   ** rtty_txbyte function.
-   ** NB Each char is one byte (8 Bits)
-   */
-
   char c;
 
   c = *string++;
@@ -95,11 +89,14 @@ static void rtty_txbit(int bit)
     digitalWrite(RADIOPIN, LOW);
   }
 
-  //                  delayMicroseconds(3370); // 300 baud
-  delayMicroseconds(10000); // For 50 Baud uncomment this and the line below.
-  delayMicroseconds(10150); // You can't do 20150 it just doesn't work as the
-                            // largest value that will produce an accurate delay is 16383
-                            // See : http://arduino.cc/en/Reference/DelayMicroseconds
+  // delayMicroseconds(3370); // 300 baud
+
+  // 50 Baud
+  // You can't do 20150 it just doesn't work as the
+  // largest value that will produce an accurate delay is 16383
+  // See : http://arduino.cc/en/Reference/DelayMicroseconds
+  delayMicroseconds(10000);
+  delayMicroseconds(10150);
 }
 
 static uint16_t gps_CRC16_checksum(char* string)
