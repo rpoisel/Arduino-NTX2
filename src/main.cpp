@@ -4,10 +4,6 @@
 
 static constexpr uint8_t const RADIOPIN = 2;
 
-static char datastring[80];
-
-static uint16_t gps_CRC16_checksum(char const* string);
-
 enum State
 {
   INVALID = 0,
@@ -185,51 +181,81 @@ class TxString : public CommLayer<char const*>
   char const* curPos;
 };
 
-static uint16_t gps_CRC16_checksum(char const* string)
+class Task
 {
-  size_t i;
-  uint16_t crc;
-  uint8_t c;
-
-  crc = 0xFFFF;
-
-  // Calculate checksum ignoring the first two $s
-  for (i = 2; i < strlen(string); i++)
+  public:
+  virtual void run()
   {
-    c = string[i];
-    crc = _crc_xmodem_update(crc, c);
+  }
+};
+
+class TaskSend : public Task
+{
+  public:
+  TaskSend() : datastring{}, txString(), timestamp(millis()), activate(false)
+  {
+    snprintf(datastring, sizeof(datastring), "RTTY TEST BEACON RTTY TEST BEACON");
+    unsigned int CHECKSUM = gps_CRC16_checksum(datastring);
+    char checksum_str[6];
+    snprintf(checksum_str, sizeof(checksum_str), "*%04X\n", CHECKSUM);
+    strncat(datastring, checksum_str, sizeof(datastring) - 1);
+    datastring[sizeof(datastring) - 1] = '\0';
+    txString.set(&datastring[0]);
   }
 
-  return crc;
-}
+  void run()
+  {
+    if (txString.send())
+    {
+      timestamp = millis();
+      activate = true;
+    }
+    if (activate && millis() - timestamp > WAIT_PERIOD_MS)
+    {
+      txString.set(&datastring[0]);
+      activate = false;
+    }
+  }
 
-static TxString txString;
+  private:
+  static constexpr unsigned long WAIT_PERIOD_MS = 2000;
+
+  uint16_t gps_CRC16_checksum(char const* string)
+  {
+    size_t i;
+    uint16_t crc;
+    uint8_t c;
+
+    crc = 0xFFFF;
+
+    // Calculate checksum ignoring the first two $s
+    for (i = 2; i < strlen(string); i++)
+    {
+      c = string[i];
+      crc = _crc_xmodem_update(crc, c);
+    }
+
+    return crc;
+  }
+
+  char datastring[80];
+  TxString txString;
+  unsigned long timestamp;
+  bool activate;
+};
+
+static TaskSend taskSend;
+static Task* const tasks[] = {&taskSend};
 
 void setup()
 {
   pinMode(RADIOPIN, OUTPUT);
-  snprintf(datastring, sizeof(datastring), "RTTY TEST BEACON RTTY TEST BEACON");
-  unsigned int CHECKSUM = gps_CRC16_checksum(datastring);
-  char checksum_str[6];
-  snprintf(checksum_str, sizeof(checksum_str), "*%04X\n", CHECKSUM);
-  strncat(datastring, checksum_str, sizeof(datastring) - 1);
-  datastring[sizeof(datastring) - 1] = '\0';
-  txString.set(&datastring[0]);
 }
 
 void loop()
 {
-  static auto timestamp = millis();
-  static bool activate = false;
-  if (txString.send())
+  for (auto task : tasks)
   {
-    timestamp = millis();
-    activate = true;
-  }
-  auto curTime = millis();
-  if (activate && curTime - timestamp > 2000)
-  {
-    txString.set(&datastring[0]);
-    activate = false;
+    task->run();
   }
 }
