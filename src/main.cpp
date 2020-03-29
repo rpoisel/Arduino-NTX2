@@ -45,7 +45,8 @@ class TxBit : public CommLayer<bool>
   public:
   static constexpr bool const BIT_START = 0;
   static constexpr bool const BIT_STOP = 1;
-  static constexpr unsigned long PERIOD_50_BAUD = 20150; // 50 baud
+  static constexpr unsigned long PERIOD_50_BAUD_US = 20150;
+  static constexpr unsigned long JITTER_50_BAUD_US = 50;
 
   TxBit(unsigned long period) : period(period), timestamp(0)
   {
@@ -61,7 +62,7 @@ class TxBit : public CommLayer<bool>
       timestamp = micros();
       break;
     case WAITING:
-      if (micros() - timestamp >= period - 50)
+      if (micros() - timestamp >= period - JITTER_50_BAUD_US)
       {
         state = SETTING;
         return true;
@@ -84,7 +85,7 @@ class TxByte : public CommLayer<char>
   static constexpr size_t ASCII_7_LEN = 7;
   static constexpr size_t ASCII_8_LEN = 8;
 
-  TxByte() : bitType(START), dataOffset(0), txBit(TxBit::PERIOD_50_BAUD)
+  TxByte() : bitType(START), dataOffset(0), txBit(TxBit::PERIOD_50_BAUD_US)
   {
   }
 
