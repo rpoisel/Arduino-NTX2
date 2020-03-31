@@ -4,6 +4,7 @@
 
 static constexpr uint8_t const RADIOPIN = 2;
 
+#if 0
 enum State
 {
   INVALID = 0,
@@ -244,19 +245,185 @@ class TaskSend : public Task
   unsigned long timestamp;
   bool activate;
 };
+#endif
 
+constexpr static uint64_t const TX_PERIOD_US = UINT64_C(20150); // hz/baud
+constexpr static uint64_t const T1_PRESCALER = UINT64_C(8);
+constexpr static uint64_t const INTERNAL_CLOCK = F_CPU; // hz
+
+static void setupTimer()
+{
+  noInterrupts();
+
+  TCCR1A = 0; // set entire TCCR1A register to 0
+  TCCR1B = 0; // same for TCCR1B
+  TCNT1 = 0;  // initialize counter value to 0
+  // set compare match register for 50hz increments
+  OCR1A = (INTERNAL_CLOCK * TX_PERIOD_US) / (T1_PRESCALER * 1e6) - 1;
+  // turn on CTC mode
+  TCCR1B |= (1 << WGM12);
+  // Set CS11 bit for 8 prescaler
+  TCCR1B |= (1 << CS11);
+  // enable timer compare interrupt
+  TIMSK1 |= (1 << OCIE1A);
+
+  interrupts();
+}
+
+using Length = uint8_t;
+using Offset = uint8_t;
+using RC = uint8_t;
+constexpr static RC const RC_OK = 0x00;
+constexpr static RC const RC_FINISHED = 0x01;
+constexpr static RC const RC_ERROR = 0x80;
+constexpr bool isRcError(RC rc)
+{
+  return rc & RC_ERROR;
+}
+constexpr bool isRcOk(RC rc)
+{
+  return !isRcError(rc);
+}
+
+class PayloadProvider
+{
+  public:
+  virtual ~PayloadProvider()
+  {
+  }
+  virtual RC getPayload(byte* buf, Length& length) = 0;
+};
+
+class ConstantPayload : public PayloadProvider
+{
+  public:
+  virtual ~ConstantPayload()
+  {
+  }
+  virtual RC getPayload(byte* buf, Length& length)
+  {
+    length = (length < PAYLOAD_LENGTH ? length : PAYLOAD_LENGTH);
+    memcpy(buf, PAYLOAD, length);
+    return RC_OK;
+  }
+
+  private:
+  static char const PAYLOAD[];
+  static Length const PAYLOAD_LENGTH;
+};
+
+char const ConstantPayload::PAYLOAD[] = "Hello, World!";
+Length const ConstantPayload::PAYLOAD_LENGTH = sizeof(ConstantPayload::PAYLOAD);
+
+class PayloadLayer
+{
+  public:
+  PayloadLayer(PayloadProvider* provider)
+      : provider(provider), payload{}, payloadLength(0), offset(0)
+  {
+  }
+  RC getByte(byte& val)
+  {
+    if (offset == payloadLength)
+    {
+      payloadLength = sizeof(payload);
+      auto rc = provider->getPayload(&payload[0], payloadLength);
+      if (rc != RC_OK)
+      {
+        return rc;
+      }
+      offset = 0;
+      if (payloadLength == 0)
+      {
+        return RC_FINISHED;
+      }
+    }
+    val = payload[offset];
+    offset++;
+    return RC_OK;
+  }
+
+  private:
+  constexpr static size_t const MAX_PAYLOAD_SIZE = 64;
+  PayloadProvider* provider;
+  byte payload[MAX_PAYLOAD_SIZE];
+  Length payloadLength;
+  Offset offset;
+};
+
+// encodes to 7 bits ASCII and includes start-/stop-bits
+class SignalLayer
+{
+  public:
+  SignalLayer(PayloadLayer* payloadLayer) : payloadLayer(payloadLayer), offset(0), curByte(0)
+  {
+  }
+  RC getSignal(bool& value)
+  {
+    if (offset == OFFSET_START)
+    {
+      auto rc = payloadLayer->getByte(curByte);
+      if (rc != RC_OK)
+      {
+        return rc;
+      }
+      value = false;
+    }
+    else if (offset >= OFFSET_DATA0 && offset < OFFSET_STOP1)
+    {
+      value = (curByte >> (offset - OFFSET_DATA0)) & 1;
+    }
+    else if (offset >= OFFSET_STOP1)
+    {
+      value = true;
+    }
+    offset = (offset < OFFSET_STOP2) ? offset + 1 : OFFSET_START;
+    return RC_OK;
+  }
+
+  private:
+  constexpr static Offset const OFFSET_START = 0;
+  constexpr static Offset const OFFSET_DATA0 = 1;
+  constexpr static Offset const OFFSET_STOP1 = 8;
+  constexpr static Offset const OFFSET_STOP2 = 9;
+
+  PayloadLayer* payloadLayer;
+  Offset offset;
+  byte curByte;
+};
+
+#if 0
 static TaskSend taskSend;
 static Task* const tasks[] = {&taskSend};
+#endif
+static ConstantPayload payloadProvider;
+static PayloadLayer payloadLayer(&payloadProvider);
+static SignalLayer signalLayer(&payloadLayer);
 
 void setup()
 {
   pinMode(RADIOPIN, OUTPUT);
+
+  setupTimer();
 }
 
 void loop()
 {
+#if 0
   for (auto task : tasks)
   {
     task->run();
+  }
+#endif
+}
+
+ISR(TIMER1_COMPA_vect)
+{
+  bool value;
+  auto rc = signalLayer.getSignal(value);
+
+  if (rc == RC_OK)
+  {
+    digitalWrite(RADIOPIN, value ? HIGH : LOW);
   }
 }
