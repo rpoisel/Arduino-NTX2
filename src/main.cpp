@@ -276,30 +276,20 @@ using RC = uint8_t;
 constexpr static RC const RC_OK = 0x00;
 constexpr static RC const RC_FINISHED = 0x01;
 constexpr static RC const RC_ERROR = 0x80;
-constexpr bool isRcError(RC rc)
-{
-  return rc & RC_ERROR;
-}
-constexpr bool isRcOk(RC rc)
-{
-  return !isRcError(rc);
-}
+constexpr bool isRcError(RC rc) { return rc & RC_ERROR; }
+constexpr bool isRcOk(RC rc) { return !isRcError(rc); }
 
 class PayloadProvider
 {
   public:
-  virtual ~PayloadProvider()
-  {
-  }
+  virtual ~PayloadProvider() {}
   virtual RC getPayload(byte* buf, Length& length) = 0;
 };
 
 class ConstantPayload : public PayloadProvider
 {
   public:
-  virtual ~ConstantPayload()
-  {
-  }
+  virtual ~ConstantPayload() {}
   virtual RC getPayload(byte* buf, Length& length)
   {
     length = (length < PAYLOAD_LENGTH ? length : PAYLOAD_LENGTH);
@@ -320,8 +310,7 @@ class PayloadLayer
   public:
   PayloadLayer(PayloadProvider* provider)
       : provider(provider), payload{}, payloadLength(0), offset(0)
-  {
-  }
+  {}
   RC getByte(byte& val)
   {
     if (offset == payloadLength)
@@ -355,9 +344,7 @@ class PayloadLayer
 class SignalLayer
 {
   public:
-  SignalLayer(PayloadLayer* payloadLayer) : payloadLayer(payloadLayer), offset(0), curByte(0)
-  {
-  }
+  SignalLayer(PayloadLayer* payloadLayer) : payloadLayer(payloadLayer), offset(0), curByte(0) {}
   RC getSignal(bool& value)
   {
     if (offset == OFFSET_START)
